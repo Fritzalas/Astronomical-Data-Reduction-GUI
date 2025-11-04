@@ -1,9 +1,10 @@
 from PyQt5.QtWidgets import (QWidget, QLabel,
                              QPushButton, QVBoxLayout)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 class WelcomeScreen(QWidget):
+    start_processing_signal = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.initUI()
@@ -54,7 +55,7 @@ class WelcomeScreen(QWidget):
                 background-color: #2a6eac;
             }
         """)
-        start_button.clicked.connect(self.start_processing)
+        start_button.clicked.connect(self.start_processing_signal.emit)
 
         # Add widgets to layout
         main_layout.addWidget(title)

@@ -1,8 +1,6 @@
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel,
-                             QPushButton, QVBoxLayout, QHBoxLayout, QFrame,
-                             QStackedWidget, QFileDialog, QMessageBox, QProgressBar)
-from PyQt5.QtCore import Qt, QTimer, QSize
-from PyQt5.QtGui import QPixmap, QFont, QIcon, QColor, QPainter, QLinearGradient, QBrush
+from PyQt5.QtWidgets import (QWidget)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QColor, QPainter, QLinearGradient, QBrush
 import random
 
 class StarryBackground(QWidget):

@@ -38,7 +38,7 @@ class MainWindow(QMainWindow):
         # Add screens to stacked widget
         self.stacked_widget.addWidget(self.welcome_screen)
         self.stacked_widget.addWidget(self.processing_screen)
-
+        self.welcome_screen.start_processing_signal.connect(self.show_processing_screen)
         # Add stacked widget to background
         self.background_layout = QVBoxLayout(self.background)
         self.background_layout.addWidget(self.stacked_widget)
