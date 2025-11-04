@@ -1,12 +1,20 @@
+import os
+import shutil
+
+import numpy as np
 from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-                             QFileDialog, QMessageBox, QProgressBar, QTabWidget)
+                             QFileDialog, QMessageBox, QProgressBar, QTabWidget, QScrollArea, QGridLayout)
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont, QPalette, QColor
+from PyQt5.QtGui import QFont, QPixmap, QImage
+from astropy.io import fits
 
 
 class ProcessingScreen(QWidget):
     def __init__(self):
         super().__init__()
+        self.flat_images_layout = None
+        self.lights_images_layout = None
+        self.bias_images_layout = None
         self.lights_tab = None
         self.bias_tab = None
         self.flat_tab = None
@@ -108,7 +116,27 @@ class ProcessingScreen(QWidget):
         layout.addWidget(instructions)
         layout.addLayout(btn_layout)
         layout.addWidget(progress)
-        layout.addStretch()
+        layout.setSpacing(10)  # vertical spacing between widgets
+        layout.setContentsMargins(10, 10, 10, 10)  # reduce outer margins
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        images_container = QWidget()
+        images_layout = QGridLayout()
+        images_container.setLayout(images_layout)
+        # Also adjust the images grid layout:
+        images_layout.setSpacing(5)  # minimal space between images
+        images_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_area.setWidget(images_container)
+        layout.addWidget(scroll_area)
+
+        # Keep references depending on the stage
+        if "Bias" in stage_name:
+            self.bias_images_layout = images_layout
+        elif "Flat" in stage_name:
+            self.flat_images_layout = images_layout
+        elif "Light" in stage_name:
+            self.lights_images_layout = images_layout
 
         tab.setLayout(layout)
         return tab
@@ -119,20 +147,80 @@ class ProcessingScreen(QWidget):
         dialog.setFileMode(QFileDialog.ExistingFiles)
         dialog.setNameFilter("Image Files (*.fits *.fit *.fts)")
 
-        # Force a readable palette
-        palette = QPalette()
-        palette.setColor(QPalette.Base, QColor(255, 255, 255))  # input/background
-        palette.setColor(QPalette.Text, QColor(0, 0, 0))  # text color
-        palette.setColor(QPalette.Button, QColor(240, 240, 240))  # button background
-        palette.setColor(QPalette.ButtonText, QColor(0, 0, 0))  # button text
-        dialog.setPalette(palette)
-
         if dialog.exec_():
             files = dialog.selectedFiles()
-            if files:
-                if len(files) == 1:
-                    QMessageBox.information(main_window, "File Selected",
-                                        f"{len(files)} image selected for processing")
+            if not files:
+                return
+
+            # Determine which tab is active
+            current_tab_index = self.tabs.currentIndex()
+            stage_name = self.tabs.tabText(current_tab_index).upper()
+            folder_name = stage_name  # Use tab name as folder name
+
+            # Create folder if it doesn't exist
+            dest_folder = os.path.join(os.getcwd(), folder_name)
+            os.makedirs(dest_folder, exist_ok=True)
+
+            # Select the correct layout to display images
+            if stage_name == "BIAS":
+                images_layout = self.bias_images_layout
+            elif stage_name == "FLAT":
+                images_layout = self.flat_images_layout
+            else:
+                images_layout = self.lights_images_layout
+
+            # Clear previous images
+            for i in reversed(range(images_layout.count())):
+                widget = images_layout.itemAt(i).widget()
+                if widget:
+                    widget.setParent(None)
+
+            # Copy files and add thumbnails
+            row, col = 0, 0
+            max_cols = 4  # max 4 images per row
+
+            for file_path in files:
+                filename = os.path.basename(file_path)
+                dest_path = os.path.join(dest_folder, filename)
+                shutil.copy(file_path, dest_path)
+
+                ext = os.path.splitext(file_path)[1].lower()
+
+                if ext in [".fits", ".fit", ".fts"]:
+
+                    hdul = fits.open(file_path)
+                    data = hdul[0].data
+                    hdul.close()
+
+                    if data is not None:
+                        data = np.nan_to_num(data)
+                        vmin, vmax = np.percentile(data, (1, 99))
+                        data = np.clip(data, vmin, vmax)
+                        data = (data - vmin) / (vmax - vmin)  # normalize 0-1
+                        data = (data * 255).astype(np.uint8)
+
+                        if data.ndim > 2:
+                            data = data[0]  # take first channel if 3D
+
+                        height, width = data.shape
+                        image = QImage(data, width, height, QImage.Format_Grayscale8)
+                        pixmap = QPixmap.fromImage(image)
                 else:
-                    QMessageBox.information(main_window, "Files Selected",
-                                            f"{len(files)} images selected for processing")
+                    pixmap = QPixmap(file_path)
+
+                # Display image if valid
+                if not pixmap.isNull():
+                    pixmap = pixmap.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    label = QLabel()
+                    label.setPixmap(pixmap)
+                    label.setToolTip(filename)
+                    images_layout.addWidget(label, row, col)
+
+                    # Update grid position
+                    col += 1
+                    if col >= max_cols:
+                        col = 0
+                        row += 1
+
+            QMessageBox.information(main_window, "Files Selected",
+                                    f"{len(files)} images selected for processing")
