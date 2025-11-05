@@ -8,8 +8,6 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPixmap, QImage
 from astropy.io import fits
 from functools import partial
-from ccdproc import CCDData, combine
-from astropy.stats import mad_std
 from GUI.FITSViewer import ImageDialog
 
 
@@ -170,23 +168,70 @@ class ProcessingScreen(QWidget):
             bias_files = [os.path.join(dest_folder, f) for f in os.listdir(dest_folder)
                           if f.lower().endswith((".fits", ".fit", ".fts"))]
 
-            calibrated_biases = [
-                CCDData.read(bf, unit="adu") for bf in bias_files
-            ]
+            if len(bias_files) == 0:
+                QMessageBox.warning(main_window, "No files", "No bias frames found.")
+                return
 
-            combined_bias = combine(
-                calibrated_biases,
-                method='median',
-                sigma_clip=True,
-                sigma_clip_low_thresh=5,
-                sigma_clip_high_thresh=5,
-                sigma_clip_func=np.ma.median,
-                sigma_clip_dev_func=mad_std,
-                mem_limit=350e6
-            )
+            # =================== CONFIGURATION ===================
+            output_file = os.path.join(dest_folder, "MasterBias.fits")
+            combine_method = "median"  # 'median' or 'average'
+            reject_method = "minmax"  # 'minmax', 'sigclip', 'pclip', or None
+            nlow = 0  # Minmax low pixels to reject
+            nhigh = 1  # Minmax high pixels to reject
+            scale = "none"  # 'none', 'median', 'mean', 'mode'
+            statsec = None  # Optional section: [x1, x2, y1, y2]
+            blank = 0.0  # Value for empty pixels
+            clobber = True
+            # =====================================================
 
-            combined_bias.meta['combined'] = True
-            combined_bias.write(os.path.join(dest_folder, 'MasterBias.fits'), overwrite=True)
+            # --- Load all images into stack ---
+            frames = []
+            for bf in bias_files:
+                data = fits.getdata(bf).astype(np.float64)
+                if statsec:
+                    x1, x2, y1, y2 = map(int, statsec)
+                    data = data[y1:y2, x1:x2]
+                frames.append(data)
+            stack = np.array(frames)  # shape: (N_images, height, width)
+
+            # --- Apply minmax rejection ---
+            if reject_method.lower() == "minmax":
+                if len(stack) > nlow + nhigh:
+                    stack_sorted = np.sort(stack, axis=0)
+                    stack_rejected = stack_sorted[nlow: len(stack_sorted) - nhigh, :, :]
+                else:
+                    stack_rejected = stack
+            else:
+                stack_rejected = stack
+
+            # Replace NaNs with blank
+            stack_rejected = np.nan_to_num(stack_rejected, nan=blank)
+
+            # --- Apply scaling ---
+            scaled_stack = stack_rejected.copy()
+            if scale.lower() not in ("none", ""):
+                for i in range(scaled_stack.shape[0]):
+                    img = scaled_stack[i]
+                    factor = 1.0
+                    if scale.lower() == "median":
+                        factor = np.median(img)
+                    elif scale.lower() == "mean":
+                        factor = np.mean(img)
+                    elif scale.lower() == "mode":
+                        factor = np.median(img) - 1.4826 * np.median(np.abs(img - np.median(img)))
+                    if factor != 0:
+                        scaled_stack[i] = img / factor
+
+            # --- Combine images ---
+            if combine_method.lower() == "median":
+                master = np.median(scaled_stack, axis=0)
+            elif combine_method.lower() == "average":
+                master = np.mean(scaled_stack, axis=0)
+            else:
+                raise ValueError(f"Unknown combine method: {combine_method}")
+
+            # --- Save Master Bias ---
+            fits.writeto(output_file, master, overwrite=clobber)
             # ---- Display MASTER BIAS in UI ----
             master_bias_path = os.path.join(dest_folder, 'MasterBias.fits')
 
