@@ -8,7 +8,8 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPixmap, QImage
 from astropy.io import fits
 from functools import partial
-
+from ccdproc import CCDData, combine
+from astropy.stats import mad_std
 from GUI.FITSViewer import ImageDialog
 
 
@@ -22,6 +23,7 @@ def open_image_dialog(file_path, _):
 class ProcessingScreen(QWidget):
     def __init__(self):
         super().__init__()
+        self.current_files = None
         self.flat_images_layout = None
         self.lights_images_layout = None
         self.bias_images_layout = None
@@ -111,7 +113,7 @@ class ProcessingScreen(QWidget):
             }
         """)
         process_btn.setEnabled(False)
-
+        process_btn.clicked.connect(self.process_images)
         # Progress bar
         progress = QProgressBar()
         progress.setVisible(False)
@@ -150,6 +152,78 @@ class ProcessingScreen(QWidget):
 
         tab.setLayout(layout)
         return tab
+
+    def process_images(self):
+        main_window = self.window()
+        current_tab_index = self.tabs.currentIndex()
+        stage_name = self.tabs.tabText(current_tab_index).upper()
+
+        if not hasattr(self, "current_files") or not self.current_files:
+            QMessageBox.warning(main_window, "No files", "Please upload images first.")
+            return
+
+        dest_folder = os.path.join(os.getcwd(), stage_name)
+
+        # --- BIAS PROCESSING ---
+        if stage_name == "BIAS":
+
+            bias_files = [os.path.join(dest_folder, f) for f in os.listdir(dest_folder)
+                          if f.lower().endswith((".fits", ".fit", ".fts"))]
+
+            calibrated_biases = [
+                CCDData.read(bf, unit="adu") for bf in bias_files
+            ]
+
+            combined_bias = combine(
+                calibrated_biases,
+                method='median',
+                sigma_clip=True,
+                sigma_clip_low_thresh=5,
+                sigma_clip_high_thresh=5,
+                sigma_clip_func=np.ma.median,
+                sigma_clip_dev_func=mad_std,
+                mem_limit=350e6
+            )
+
+            combined_bias.meta['combined'] = True
+            combined_bias.write(os.path.join(dest_folder, 'MasterBias.fits'), overwrite=True)
+            # ---- Display MASTER BIAS in UI ----
+            master_bias_path = os.path.join(dest_folder, 'MasterBias.fits')
+
+            # Clear grid
+            for i in reversed(range(self.bias_images_layout.count())):
+                widget = self.bias_images_layout.itemAt(i).widget()
+                if widget:
+                    widget.setParent(None)
+
+            # Create thumbnail
+            with fits.open(master_bias_path) as hdul:
+                data = np.nan_to_num(hdul[0].data)
+
+            vmin, vmax = np.percentile(data, (1, 99))
+            data = np.clip(data, vmin, vmax)
+            data = ((data - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+            if data.ndim > 2:
+                data = data[0]
+
+            data_copy = data.copy()
+            h, w = data_copy.shape
+            image = QImage(data_copy.data, w, h, w, QImage.Format_Grayscale8)
+            image = image.copy()  # VERY IMPORTANT
+            pixmap = QPixmap.fromImage(image).scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+            label = QLabel()
+            label.setPixmap(pixmap)
+            label.setToolTip("Master Bias")
+            label.setAlignment(Qt.AlignCenter)
+
+            label.mousePressEvent = lambda event, fp=master_bias_path: open_image_dialog(fp, event)
+
+            self.bias_images_layout.addWidget(label, 0, 0)
+            # Enable Process button ONLY for BIAS tab
+            process_btn = self.tabs.currentWidget().findChildren(QPushButton)[1]
+            process_btn.setEnabled(False)
+            QMessageBox.information(main_window, "Master Bias Created", "MasterBias.fits has been successfully generated!")
 
     def upload_images(self):
         main_window = self.window()
@@ -228,5 +302,9 @@ class ProcessingScreen(QWidget):
                         col = 0
                         row += 1
 
+            self.current_files = files
+            # Enable Process button ONLY for BIAS tab
+            process_btn = self.tabs.currentWidget().findChildren(QPushButton)[1]
+            process_btn.setEnabled(stage_name == "BIAS")
             QMessageBox.information(main_window, "Files Selected",
                                     f"{len(files)} images selected for processing")
