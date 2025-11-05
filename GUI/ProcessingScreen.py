@@ -7,6 +7,16 @@ from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLay
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPixmap, QImage
 from astropy.io import fits
+from functools import partial
+
+from GUI.FITSViewer import ImageDialog
+
+
+def open_image_dialog(file_path, _):
+    """Open FITS image in DS9-like dialog."""
+    dialog = ImageDialog(file_path)
+    dialog.setAttribute(Qt.WA_DeleteOnClose)  # Ensure proper deletion
+    dialog.exec_()
 
 
 class ProcessingScreen(QWidget):
@@ -152,16 +162,16 @@ class ProcessingScreen(QWidget):
             if not files:
                 return
 
-            # Determine which tab is active
             current_tab_index = self.tabs.currentIndex()
             stage_name = self.tabs.tabText(current_tab_index).upper()
-            folder_name = stage_name  # Use tab name as folder name
-
-            # Create folder if it doesn't exist
+            folder_name = stage_name
             dest_folder = os.path.join(os.getcwd(), folder_name)
             os.makedirs(dest_folder, exist_ok=True)
+            for f in os.listdir(dest_folder):
+                file_path = os.path.join(dest_folder, f)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
 
-            # Select the correct layout to display images
             if stage_name == "BIAS":
                 images_layout = self.bias_images_layout
             elif stage_name == "FLAT":
@@ -169,15 +179,13 @@ class ProcessingScreen(QWidget):
             else:
                 images_layout = self.lights_images_layout
 
-            # Clear previous images
             for i in reversed(range(images_layout.count())):
                 widget = images_layout.itemAt(i).widget()
                 if widget:
                     widget.setParent(None)
 
-            # Copy files and add thumbnails
             row, col = 0, 0
-            max_cols = 4  # max 4 images per row
+            max_cols = 4
 
             for file_path in files:
                 filename = os.path.basename(file_path)
@@ -186,8 +194,8 @@ class ProcessingScreen(QWidget):
 
                 ext = os.path.splitext(file_path)[1].lower()
 
+                pixmap = None
                 if ext in [".fits", ".fit", ".fts"]:
-
                     hdul = fits.open(file_path)
                     data = hdul[0].data
                     hdul.close()
@@ -196,27 +204,25 @@ class ProcessingScreen(QWidget):
                         data = np.nan_to_num(data)
                         vmin, vmax = np.percentile(data, (1, 99))
                         data = np.clip(data, vmin, vmax)
-                        data = (data - vmin) / (vmax - vmin)  # normalize 0-1
-                        data = (data * 255).astype(np.uint8)
-
+                        data = ((data - vmin) / (vmax - vmin) * 255).astype(np.uint8)
                         if data.ndim > 2:
-                            data = data[0]  # take first channel if 3D
-
-                        height, width = data.shape
-                        image = QImage(data, width, height, QImage.Format_Grayscale8)
+                            data = data[0]
+                        h, w = data.shape
+                        image = QImage(data, w, h, QImage.Format_Grayscale8)
                         pixmap = QPixmap.fromImage(image)
                 else:
                     pixmap = QPixmap(file_path)
 
-                # Display image if valid
-                if not pixmap.isNull():
-                    pixmap = pixmap.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                if pixmap is not None and not pixmap.isNull():
+                    pixmap = pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     label = QLabel()
                     label.setPixmap(pixmap)
                     label.setToolTip(filename)
-                    images_layout.addWidget(label, row, col)
+                    label.setAlignment(Qt.AlignCenter)
 
-                    # Update grid position
+                    label.mousePressEvent = partial(open_image_dialog, file_path)
+
+                    images_layout.addWidget(label, row, col)
                     col += 1
                     if col >= max_cols:
                         col = 0
